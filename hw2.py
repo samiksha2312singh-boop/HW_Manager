@@ -83,7 +83,7 @@ def get_claude_summary(content, summary_type, language, use_advanced=False, api_
     
     try:
         client = anthropic.Anthropic(api_key=api_key)
-        model = "claude-3-opus-20240229" if use_advanced else "claude-3-haiku-20240307"
+        model = "claude-3-5-sonnet-20241022" if use_advanced else "claude-3-haiku-20240307"
         
         prompt = f"""
         Please provide a {summary_type} summary of the following content in {language}.
@@ -202,7 +202,7 @@ def main():
             "standard": "GPT-3.5-turbo"
         },
         "Claude": {
-            "advanced": "Claude-3 Opus",
+            "advanced": "Claude-3.5 Sonnet",
             "standard": "Claude-3 Haiku"
         },
         "Gemini": {
