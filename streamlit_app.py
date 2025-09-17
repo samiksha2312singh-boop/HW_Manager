@@ -3,6 +3,7 @@ import streamlit as st
 # Import lab files directly (they're in the same directory)
 import hw1
 import hw2
+import hw3
 
 # Page configuration
 st.set_page_config(
@@ -134,12 +135,15 @@ def run_hw1():
 def run_hw2():
     # Call the main function from lab2
     hw2.main()
+def run_hw3():
+    hw3.run()
 
 # Create navigation with dropdown structure
 nav = st.navigation({
     "HW Manager": [
         st.Page(run_hw1, title="HW1 - Document QA", url_path="hw1"),
-        st.Page(run_hw2, title="HW2 - URL Summarizer", url_path="hw2", default=True),
+        st.Page(run_hw2, title="HW2 - URL Summarizer", url_path="hw2"), 
+        st.Page(run_hw3, title="HW3 - Chatbot to discuss URL", url_path="hw3", default=True)
     ]
 })
 
