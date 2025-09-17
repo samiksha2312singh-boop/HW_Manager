@@ -135,8 +135,9 @@ def run_hw1():
 def run_hw2():
     # Call the main function from lab2
     hw2.main()
+    
 def run_hw3():
-    hw3.run()
+    hw3.run()  # Fixed: use run() instead of main()
 
 # Create navigation with dropdown structure
 nav = st.navigation({
