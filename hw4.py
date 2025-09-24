@@ -30,17 +30,20 @@ except ImportError:
 # LLM SDKs
 # ──────────────────────────────────────────────────────────────────────────────
 from openai import OpenAI
+
+# Gemini
 try:
     import google.generativeai as genai
     GEMINI_AVAILABLE = True
 except ImportError:
     GEMINI_AVAILABLE = False
 
+# Groq
 try:
-    import cohere
-    COHERE_AVAILABLE = True
+    from groq import Groq
+    GROQ_AVAILABLE = True
 except ImportError:
-    COHERE_AVAILABLE = False
+    GROQ_AVAILABLE = False
 
 # ──────────────────────────────────────────────────────────────────────────────
 # HTML → text + chunking
@@ -60,11 +63,7 @@ def extract_text_from_html(html_content: str) -> str:
         return ""
 
 def chunk_document_semantic(text: str, max_chunk_size: int = 3000) -> List[str]:
-    """
-    Semantic paragraph-based chunking:
-    - Keeps paragraphs intact to preserve topic boundaries
-    - Falls back to sentence-based splits only if a single huge chunk remains
-    """
+    """Semantic paragraph chunking with sentence fallback for oversized blocks."""
     paragraphs = text.split('\n\n')
     chunks, current = [], ""
     for p in paragraphs:
@@ -168,7 +167,6 @@ def create_or_load_vector_database(force_rebuild: bool = False):
         return None
     openai_client = OpenAI(api_key=openai_api_key)
 
-    html_files = _discover_html_files
     html_files = _discover_html_files()
     if not html_files:
         st.error("No HTML files found. Put files in project root or ./su_org/")
@@ -250,8 +248,8 @@ def search_vector_database(vector_db, query: str, n_results: int = 3):
 def get_llm_response(messages: List[Dict], model_name: str, api_clients: Dict):
     """
     Returns:
-      - OpenAI: a streaming iterator (ChatCompletionChunk iterator) OR error string
-      - Cohere/Gemini: a string (generated text) OR error string
+      - OpenAI: streaming iterator OR error string
+      - Groq / Gemini: string (generated text) OR error string
     """
     try:
         # OpenAI GPT family (incl. gpt-5 / gpt-4o / 3.5)
@@ -260,76 +258,76 @@ def get_llm_response(messages: List[Dict], model_name: str, api_clients: Dict):
             if not client:
                 return "OpenAI client not available. Set OPENAI_API_KEY."
 
-            # Newer GPT-5 models use `max_completion_tokens`; older ones use `max_tokens`
-            token_kwarg = {"max_tokens": 1000}
+            # Param compatibility map
+            params = {
+                "model": model_name,
+                "messages": messages,
+                "stream": True,
+            }
+
             if model_name.startswith("gpt-5"):
-                token_kwarg = {"max_completion_tokens": 1000}
+                # Newer family: uses max_completion_tokens; many previews fix temperature to default
+                params["max_completion_tokens"] = 1000
+                # don't send temperature unless we have to
+            else:
+                params["max_tokens"] = 1000
+                params["temperature"] = 0.7  # OK for 4o/3.5
 
             try:
-                stream = client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    stream=True,
-                    temperature=0.7,
-                    **token_kwarg
-                )
+                stream = client.chat.completions.create(**params)
                 return stream
             except Exception as e:
-                # If a preview tag expects the other param, retry once with flipped param
+                # Retry logic: remove/flip unsupported params (e.g., temperature, token kwarg)
                 err = str(e)
-                try_alt = False
-                if ("unsupported_parameter" in err) or ("max_tokens" in err) or ("max_completion_tokens" in err):
-                    try_alt = True
+                # Temperature not supported → drop it
+                if "temperature" in err and "unsupported" in err.lower():
+                    params.pop("temperature", None)
+                # Token kwarg mismatch → flip
+                if "max_tokens" in err and "unsupported" in err.lower():
+                    params.pop("max_tokens", None)
+                    params["max_completion_tokens"] = 1000
+                elif "max_completion_tokens" in err and "unsupported" in err.lower():
+                    params.pop("max_completion_tokens", None)
+                    params["max_tokens"] = 1000
+                try:
+                    stream = client.chat.completions.create(**params)
+                    return stream
+                except Exception as e2:
+                    return f"Error with {model_name}: {e2}"
 
-                if try_alt:
-                    alt_kwarg = {"max_completion_tokens": 1000} if "max_tokens" in err else {"max_tokens": 1000}
-                    try:
-                        stream = client.chat.completions.create(
-                            model=model_name,
-                            messages=messages,
-                            stream=True,
-                            temperature=0.7,
-                            **alt_kwarg
-                        )
-                        return stream
-                    except Exception as e2:
-                        return f"Error with {model_name}: {e2}"
-                return f"Error with {model_name}: {e}"
-
-        # Cohere (replacing Claude)
-        elif model_name.startswith("command") or model_name.startswith("cohere"):
-            client = api_clients.get("cohere")
+        # Groq family (OpenAI-compatible chat API shape, non-stream here for simplicity)
+        elif model_name.startswith("llama") or model_name.startswith("mixtral") or model_name.startswith("gemma") or model_name.startswith("groq/"):
+            client = api_clients.get("groq")
             if not client:
-                return "Cohere client not available. Set COHERE_API_KEY."
-            prompt = "\n\n".join(
-                f"{'System' if m['role']=='system' else 'User' if m['role']=='user' else 'Assistant'}: {m['content']}"
-                for m in messages
-            )
+                return "Groq client not available. Set GROQ_API_KEY."
+
+            # Build request; many Groq models accept temperature, but we keep it minimal
             try:
-                if hasattr(client, "chat"):
-                    resp = client.chat(model=model_name, message=prompt, temperature=0.7)
-                    if hasattr(resp, "text") and resp.text:
-                        return resp.text
-                    if hasattr(resp, "message") and getattr(resp.message, "content", None):
-                        parts = resp.message.content
-                        out = []
-                        for p in parts:
-                            t = p.get("text") if isinstance(p, dict) else getattr(p, "text", None)
-                            if t:
-                                out.append(t)
-                        return "\n".join(out) if out else str(resp)
-                    return str(resp)
-                if hasattr(client, "generate"):
-                    resp = client.generate(model=model_name, prompt=prompt, temperature=0.7, max_tokens=1000)
-                    if hasattr(resp, "generations") and resp.generations:
-                        first = resp.generations[0]
-                        text = getattr(first, "text", None) or getattr(first, "generation", None)
-                        if text:
-                            return text
-                    return str(resp)
-                return "Cohere SDK does not expose chat() or generate() — please upgrade cohere package."
+                resp = client.chat.completions.create(
+                    model=model_name.replace("groq/",""),  # allow prefix override
+                    messages=messages,
+                    temperature=0.7
+                )
+                # Non-stream: pull first choice
+                if hasattr(resp, "choices") and resp.choices:
+                    content = getattr(resp.choices[0].message, "content", None)
+                    if content:
+                        return content
+                return str(resp)
             except Exception as e:
-                return f"Error with {model_name}: {e}"
+                # Retry without temperature if unsupported
+                try:
+                    resp = client.chat.completions.create(
+                        model=model_name.replace("groq/",""),
+                        messages=messages
+                    )
+                    if hasattr(resp, "choices") and resp.choices:
+                        content = getattr(resp.choices[0].message, "content", None)
+                        if content:
+                            return content
+                    return str(resp)
+                except Exception as e2:
+                    return f"Error with {model_name}: {e2}"
 
         # Gemini
         elif model_name.startswith("gemini"):
@@ -355,7 +353,6 @@ def display_streaming_response(stream, placeholder):
     """Render an OpenAI streaming iterator safely."""
     full = ""
     for chunk in stream:
-        # Guard in case something unexpected yields strings
         if isinstance(chunk, str):
             full += chunk
             placeholder.markdown(full + "▌")
@@ -410,14 +407,14 @@ def run():
     if openai_key:
         api_clients["openai"] = OpenAI(api_key=openai_key)
 
-    # Cohere
-    if COHERE_AVAILABLE:
+    # Groq
+    if GROQ_AVAILABLE:
         try:
-            cohere_key = (st.secrets.get("COHERE_API_KEY") if hasattr(st, "secrets") else None) or os.getenv("COHERE_API_KEY")
-            if cohere_key:
-                api_clients["cohere"] = cohere.Client(cohere_key)
+            groq_key = (st.secrets.get("GROQ_API_KEY") if hasattr(st, "secrets") else None) or os.getenv("GROQ_API_KEY")
+            if groq_key:
+                api_clients["groq"] = Groq(api_key=groq_key)
         except Exception as e:
-            st.sidebar.error(f"Cohere setup error: {e}")
+            st.sidebar.error(f"Groq setup error: {e}")
 
     # Gemini (configure once; model instantiated later)
     if GEMINI_AVAILABLE:
@@ -436,7 +433,7 @@ def run():
     st.sidebar.header("AI Model Selection")
     st.sidebar.write("**Available APIs:**")
     st.sidebar.write(f"- OpenAI: {'✓' if 'openai' in api_clients else '✗'}")
-    st.sidebar.write(f"- Cohere: {'✓' if 'cohere' in api_clients else '✗'}")
+    st.sidebar.write(f"- Groq: {'✓' if 'groq' in api_clients else '✗'}")
     st.sidebar.write(f"- Gemini: {'✓' if 'gemini_available' in api_clients else '✗'}")
 
     available_models = []
@@ -447,11 +444,11 @@ def run():
             "gpt-4o-mini",
             "gpt-3.5-turbo",
         ]
-    if "cohere" in api_clients:
+    if "groq" in api_clients:
+        # Two widely-available "latest" Groq models; adjust if your org exposes others
         available_models += [
-            "command-r-plus",
-            "command-r",
-            "command",       # lightweight
+            "llama-3.1-70b-versatile",
+            "mixtral-8x7b-32768",
         ]
     if "gemini_available" in api_clients:
         available_models += [
@@ -461,7 +458,7 @@ def run():
         ]
 
     if not available_models:
-        st.error("No LLM API keys found. Add OPENAI_API_KEY, COHERE_API_KEY, or GEMINI_API_KEY in secrets.toml.")
+        st.error("No LLM API keys found. Add OPENAI_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY in secrets.toml.")
         return
 
     selected_model = st.sidebar.selectbox("Choose LLM Model:", available_models)
@@ -470,9 +467,8 @@ def run():
         "gpt-4o": "OpenAI flagship",
         "gpt-4o-mini": "OpenAI efficient",
         "gpt-3.5-turbo": "OpenAI economical",
-        "command-r-plus": "Cohere large reasoning/chat model",
-        "command-r": "Cohere balanced reasoning/chat model",
-        "command": "Cohere lightweight chat model",
+        "llama-3.1-70b-versatile": "Groq • Llama 3.1 70B (chat/function use)",
+        "mixtral-8x7b-32768": "Groq • Mixtral 8x7B (32k context)",
         "gemini-1.5-pro": "Gemini flagship",
         "gemini-1.5-pro-002": "Gemini flagship (newer tag)",
         "gemini-1.5-flash": "Gemini efficient",
@@ -483,7 +479,7 @@ def run():
     st.sidebar.divider()
     st.sidebar.subheader("Custom Model (optional)")
     custom_model = st.sidebar.text_input(
-        "Enter exact model name (e.g., gpt-5, command-r-plus-08-2025, gemini-1.5-pro-002)",
+        "Enter exact model name (e.g., gpt-5, llama-3.2-90b-text-preview, gemini-1.5-pro-002)",
         value="",
         placeholder="Type here to override the dropdown…"
     )
@@ -494,8 +490,9 @@ def run():
     # Helpful guardrails
     if selected_model.startswith("gpt") and "openai" not in api_clients:
         st.sidebar.warning("OpenAI not configured; GPT models will error.")
-    if (selected_model.startswith("command") or selected_model.startswith("cohere")) and "cohere" not in api_clients:
-        st.sidebar.warning("Cohere not configured; Cohere models will error.")
+    if (selected_model.startswith("llama") or selected_model.startswith("mixtral") or
+        selected_model.startswith("gemma") or selected_model.startswith("groq/")) and "groq" not in api_clients:
+        st.sidebar.warning("Groq not configured; Groq models will error.")
     if selected_model.startswith("gemini") and "gemini_available" not in api_clients:
         st.sidebar.warning("Gemini not configured; Gemini models will error.")
 
@@ -580,15 +577,13 @@ def run():
                                 st.error(full_response)
                             st.markdown(full_response)
 
-                        # Cohere
-                        elif selected_model.startswith("command") or selected_model.startswith("cohere"):
+                        # Groq (non-stream)
+                        elif (selected_model.startswith("llama") or selected_model.startswith("mixtral") or
+                              selected_model.startswith("gemma") or selected_model.startswith("groq/")):
                             full_response = get_llm_response(messages, selected_model, api_clients)
-                            if isinstance(full_response, str):
-                                if full_response.lower().startswith("error with"):
-                                    st.error(full_response)
-                                st.markdown(full_response)
-                            else:
-                                st.markdown(str(full_response))
+                            if isinstance(full_response, str) and full_response.lower().startswith("error with"):
+                                st.error(full_response)
+                            st.markdown(full_response)
 
                         # Gemini
                         elif selected_model.startswith("gemini"):
@@ -666,7 +661,7 @@ def run():
         st.write(f"**Conversation Length:** {len(st.session_state.conversation_history)}")
         st.write(f"**Memory Buffer Size:** {max_memory_messages}")
         st.write(f"**ChromaDB Available:** {CHROMADB_AVAILABLE}")
-        st.write(f"**Cohere Available:** {COHERE_AVAILABLE}")
+        st.write(f"**Groq Available:** {GROQ_AVAILABLE}")
         st.write(f"**Gemini Available:** {GEMINI_AVAILABLE}")
         try:
             st.write(f"**Documents in DB:** {vector_db['collection'].count()}")

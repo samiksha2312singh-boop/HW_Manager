@@ -11,3 +11,4 @@ html5lib>=1.1
 tiktoken
 chromadb
 pysqlite3-binary
+groq>=0.9.0
