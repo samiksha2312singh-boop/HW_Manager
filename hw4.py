@@ -6,7 +6,7 @@ from typing import List, Dict
 from bs4 import BeautifulSoup
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SQLite fix for ChromaDB on Streamlit Cloud (must be before chromadb import)
+# SQLite fix for ChromaDB (must run before chromadb import)
 # ──────────────────────────────────────────────────────────────────────────────
 try:
     import pysqlite3  # type: ignore
@@ -16,7 +16,7 @@ except Exception:
     pass
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ChromaDB import with availability check
+# ChromaDB
 # ──────────────────────────────────────────────────────────────────────────────
 CHROMADB_AVAILABLE = False
 try:
@@ -27,7 +27,7 @@ except ImportError:
     CHROMADB_AVAILABLE = False
 
 # ──────────────────────────────────────────────────────────────────────────────
-# LLM SDKs
+# Providers
 # ──────────────────────────────────────────────────────────────────────────────
 from openai import OpenAI
 
@@ -49,7 +49,6 @@ except ImportError:
 # HTML → text + chunking
 # ──────────────────────────────────────────────────────────────────────────────
 def extract_text_from_html(html_content: str) -> str:
-    """Extract clean text from HTML."""
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         for script in soup(["script", "style"]):
@@ -63,7 +62,6 @@ def extract_text_from_html(html_content: str) -> str:
         return ""
 
 def chunk_document_semantic(text: str, max_chunk_size: int = 3000) -> List[str]:
-    """Semantic paragraph chunking with sentence fallback for oversized blocks."""
     paragraphs = text.split('\n\n')
     chunks, current = [], ""
     for p in paragraphs:
@@ -245,44 +243,45 @@ def search_vector_database(vector_db, query: str, n_results: int = 3):
 # ──────────────────────────────────────────────────────────────────────────────
 # LLM helpers
 # ──────────────────────────────────────────────────────────────────────────────
+# Map deprecated Groq IDs → current ones
+GROQ_MODEL_ALIASES = {
+    "llama-3.1-70b-versatile": "llama-3.3-70b-versatile",
+    "llama-3.1-70b": "llama-3.3-70b-versatile",
+}
+
+def _resolve_groq_model(name: str) -> str:
+    base = name.replace("groq/", "")
+    return GROQ_MODEL_ALIASES.get(base, base)
+
 def get_llm_response(messages: List[Dict], model_name: str, api_clients: Dict):
     """
     Returns:
       - OpenAI: streaming iterator OR error string
-      - Groq / Gemini: string (generated text) OR error string
+      - Groq / Gemini: string OR error string
     """
     try:
-        # OpenAI GPT family (incl. gpt-5 / gpt-4o / 3.5)
+        # OpenAI GPT family
         if model_name.startswith("gpt"):
             client = api_clients.get("openai")
             if not client:
                 return "OpenAI client not available. Set OPENAI_API_KEY."
 
-            # Param compatibility map
-            params = {
-                "model": model_name,
-                "messages": messages,
-                "stream": True,
-            }
-
+            params = {"model": model_name, "messages": messages, "stream": True}
             if model_name.startswith("gpt-5"):
-                # Newer family: uses max_completion_tokens; many previews fix temperature to default
-                params["max_completion_tokens"] = 1000
-                # don't send temperature unless we have to
+                params["max_completion_tokens"] = 1000   # GPT-5 style
+                # omit temperature (some previews lock it)
             else:
                 params["max_tokens"] = 1000
-                params["temperature"] = 0.7  # OK for 4o/3.5
+                params["temperature"] = 0.7
 
             try:
-                stream = client.chat.completions.create(**params)
-                return stream
+                return client.chat.completions.create(**params)
             except Exception as e:
-                # Retry logic: remove/flip unsupported params (e.g., temperature, token kwarg)
                 err = str(e)
-                # Temperature not supported → drop it
+                # Drop temperature if rejected
                 if "temperature" in err and "unsupported" in err.lower():
                     params.pop("temperature", None)
-                # Token kwarg mismatch → flip
+                # Flip token kwarg if needed
                 if "max_tokens" in err and "unsupported" in err.lower():
                     params.pop("max_tokens", None)
                     params["max_completion_tokens"] = 1000
@@ -290,35 +289,35 @@ def get_llm_response(messages: List[Dict], model_name: str, api_clients: Dict):
                     params.pop("max_completion_tokens", None)
                     params["max_tokens"] = 1000
                 try:
-                    stream = client.chat.completions.create(**params)
-                    return stream
+                    return client.chat.completions.create(**params)
                 except Exception as e2:
                     return f"Error with {model_name}: {e2}"
 
-        # Groq family (OpenAI-compatible chat API shape, non-stream here for simplicity)
-        elif model_name.startswith("llama") or model_name.startswith("mixtral") or model_name.startswith("gemma") or model_name.startswith("groq/"):
+        # Groq family (non-stream for simplicity)
+        elif (model_name.startswith("llama") or model_name.startswith("mixtral")
+              or model_name.startswith("gemma") or model_name.startswith("groq/")
+              or model_name.startswith("openai/gpt-oss")):
             client = api_clients.get("groq")
             if not client:
                 return "Groq client not available. Set GROQ_API_KEY."
 
-            # Build request; many Groq models accept temperature, but we keep it minimal
+            resolved = _resolve_groq_model(model_name)
             try:
                 resp = client.chat.completions.create(
-                    model=model_name.replace("groq/",""),  # allow prefix override
+                    model=resolved,
                     messages=messages,
                     temperature=0.7
                 )
-                # Non-stream: pull first choice
                 if hasattr(resp, "choices") and resp.choices:
                     content = getattr(resp.choices[0].message, "content", None)
                     if content:
                         return content
                 return str(resp)
             except Exception as e:
-                # Retry without temperature if unsupported
+                # Retry without temperature, and also try alias resolution once more
                 try:
                     resp = client.chat.completions.create(
-                        model=model_name.replace("groq/",""),
+                        model=_resolve_groq_model(resolved),
                         messages=messages
                     )
                     if hasattr(resp, "choices") and resp.choices:
@@ -345,12 +344,10 @@ def get_llm_response(messages: List[Dict], model_name: str, api_clients: Dict):
                 return f"Error with {model_name}: {e}"
 
         return f"Unsupported model/provider: {model_name}"
-
     except Exception as e:
         return f"Unexpected error ({model_name}): {e}"
 
 def display_streaming_response(stream, placeholder):
-    """Render an OpenAI streaming iterator safely."""
     full = ""
     for chunk in stream:
         if isinstance(chunk, str):
@@ -416,7 +413,7 @@ def run():
         except Exception as e:
             st.sidebar.error(f"Groq setup error: {e}")
 
-    # Gemini (configure once; model instantiated later)
+    # Gemini
     if GEMINI_AVAILABLE:
         try:
             gemini_key = (
@@ -436,26 +433,22 @@ def run():
     st.sidebar.write(f"- Groq: {'✓' if 'groq' in api_clients else '✗'}")
     st.sidebar.write(f"- Gemini: {'✓' if 'gemini_available' in api_clients else '✗'}")
 
+    # Groq current production model IDs (from docs)
+    GROQ_DEFAULTS = [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        # You can also expose Groq’s OpenAI-licensed OSS:
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+    ]
+
     available_models = []
     if "openai" in api_clients:
-        available_models += [
-            "gpt-5",          # if your API key has access
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-3.5-turbo",
-        ]
+        available_models += ["gpt-5", "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"]
     if "groq" in api_clients:
-        # Two widely-available "latest" Groq models; adjust if your org exposes others
-        available_models += [
-            "llama-3.1-70b-versatile",
-            "mixtral-8x7b-32768",
-        ]
+        available_models += GROQ_DEFAULTS
     if "gemini_available" in api_clients:
-        available_models += [
-            "gemini-1.5-pro",
-            "gemini-1.5-pro-002",
-            "gemini-1.5-flash",
-        ]
+        available_models += ["gemini-1.5-pro", "gemini-1.5-pro-002", "gemini-1.5-flash"]
 
     if not available_models:
         st.error("No LLM API keys found. Add OPENAI_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY in secrets.toml.")
@@ -463,23 +456,25 @@ def run():
 
     selected_model = st.sidebar.selectbox("Choose LLM Model:", available_models)
     model_info = {
-        "gpt-5": "OpenAI next-gen model (if enabled on your key)",
+        "gpt-5": "OpenAI next-gen (if enabled on your key)",
         "gpt-4o": "OpenAI flagship",
         "gpt-4o-mini": "OpenAI efficient",
         "gpt-3.5-turbo": "OpenAI economical",
-        "llama-3.1-70b-versatile": "Groq • Llama 3.1 70B (chat/function use)",
-        "mixtral-8x7b-32768": "Groq • Mixtral 8x7B (32k context)",
+        "llama-3.3-70b-versatile": "Groq • Llama 3.3 70B (prod)",
+        "llama-3.1-8b-instant": "Groq • Llama 3.1 8B instant (prod)",
+        "openai/gpt-oss-120b": "Groq • OpenAI GPT-OSS 120B",
+        "openai/gpt-oss-20b": "Groq • OpenAI GPT-OSS 20B",
         "gemini-1.5-pro": "Gemini flagship",
         "gemini-1.5-pro-002": "Gemini flagship (newer tag)",
         "gemini-1.5-flash": "Gemini efficient",
     }
     st.sidebar.caption(model_info.get(selected_model, ""))
 
-    # Custom model override (lets you type any latest/preview name)
+    # Custom model override
     st.sidebar.divider()
     st.sidebar.subheader("Custom Model (optional)")
     custom_model = st.sidebar.text_input(
-        "Enter exact model name (e.g., gpt-5, llama-3.2-90b-text-preview, gemini-1.5-pro-002)",
+        "Enter exact model name (e.g., gpt-5, llama-3.3-70b-versatile, openai/gpt-oss-120b, gemini-1.5-pro-002)",
         value="",
         placeholder="Type here to override the dropdown…"
     )
@@ -487,16 +482,17 @@ def run():
         selected_model = custom_model.strip()
         st.sidebar.caption(f"Using custom model: {selected_model}")
 
-    # Helpful guardrails
+    # Guardrails
     if selected_model.startswith("gpt") and "openai" not in api_clients:
         st.sidebar.warning("OpenAI not configured; GPT models will error.")
-    if (selected_model.startswith("llama") or selected_model.startswith("mixtral") or
-        selected_model.startswith("gemma") or selected_model.startswith("groq/")) and "groq" not in api_clients:
+    if (selected_model.startswith("llama") or selected_model.startswith("mixtral")
+        or selected_model.startswith("gemma") or selected_model.startswith("groq/")
+        or selected_model.startswith("openai/gpt-oss")) and "groq" not in api_clients:
         st.sidebar.warning("Groq not configured; Groq models will error.")
     if selected_model.startswith("gemini") and "gemini_available" not in api_clients:
         st.sidebar.warning("Gemini not configured; Gemini models will error.")
 
-    # Sidebar — memory + KB controls
+    # Memory controls
     st.sidebar.header("Memory Configuration")
     memory_options = {
         "Conversation Buffer (5 Q&A pairs)": 10,
@@ -563,7 +559,7 @@ def run():
                         )
                         messages = [{"role": "user", "content": rag_prompt}]
 
-                        # OpenAI (streaming)
+                        # OpenAI (stream)
                         if selected_model.startswith("gpt"):
                             resp = get_llm_response(messages, selected_model, api_clients)
                             if isinstance(resp, str):
@@ -578,8 +574,9 @@ def run():
                             st.markdown(full_response)
 
                         # Groq (non-stream)
-                        elif (selected_model.startswith("llama") or selected_model.startswith("mixtral") or
-                              selected_model.startswith("gemma") or selected_model.startswith("groq/")):
+                        elif (selected_model.startswith("llama") or selected_model.startswith("mixtral")
+                              or selected_model.startswith("gemma") or selected_model.startswith("groq/")
+                              or selected_model.startswith("openai/gpt-oss")):
                             full_response = get_llm_response(messages, selected_model, api_clients)
                             if isinstance(full_response, str) and full_response.lower().startswith("error with"):
                                 st.error(full_response)
