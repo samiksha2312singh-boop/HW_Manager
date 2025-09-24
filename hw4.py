@@ -5,6 +5,27 @@ from pathlib import Path
 from typing import List, Dict
 from bs4 import BeautifulSoup
 
+# Chunking strategy used in this app
+#
+# Method: **Semantic paragraph-based chunking with a sentence fallback**
+#
+# How it works:
+# 1) Split the document on paragraph boundaries (`\n\n`). We then build chunks
+#    by appending whole paragraphs until a size cap is reached (`max_chunk_size`).
+# 2) If we end up with a single, oversized paragraph (e.g., a long blob of text),
+#    we fall back to splitting by sentences ('. ') to avoid cutting in the middle
+#    of words while still respecting the size cap.
+#
+# Why this method (vs. naive fixed-length splitting):
+# - **Preserves meaning and context:** Keeping paragraphs intact keeps related
+#   sentences together (titles + bullets + explanations), which improves RAG
+#   retrieval quality and reduces “orphaned” facts.
+# - **Natural boundaries:** Paragraphs are author-chosen semantic units; using
+#   them minimizes cutting mid-thought, which can confuse embeddings and the LLM.
+# - **Better answer grounding:** Larger, coherent chunks give the model enough
+#   local context to cite correctly without drifting.
+# - **Robustness:** The sentence fallback handles pages that are a single giant
+#   paragraph (or poorly formatted HTML) without exceeding size limits.
 # ──────────────────────────────────────────────────────────────────────────────
 # SQLite fix for ChromaDB (must run before chromadb import)
 # ──────────────────────────────────────────────────────────────────────────────
