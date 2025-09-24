@@ -4,6 +4,7 @@ import streamlit as st
 import hw1
 import hw2
 import hw3
+import hw4
 
 # Page configuration
 st.set_page_config(
@@ -139,12 +140,16 @@ def run_hw2():
 def run_hw3():
     hw3.run()  # Fixed: use run() instead of main()
 
+def run_hw4():
+    hw4.run()
+
 # Create navigation with dropdown structure
 nav = st.navigation({
     "HW Manager": [
         st.Page(run_hw1, title="HW1 - Document QA", url_path="hw1"),
         st.Page(run_hw2, title="HW2 - URL Summarizer", url_path="hw2"), 
-        st.Page(run_hw3, title="HW3 - Chatbot to discuss URL", url_path="hw3", default=True)
+        st.Page(run_hw3, title="HW3 - Chatbot to discuss URL", url_path="hw3"),
+        st.Page(run_hw4, title="HW4 - RAG", url_path="hw4", default=True)
     ]
 })
 
