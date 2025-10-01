@@ -5,6 +5,7 @@ import hw1
 import hw2
 import hw3
 import hw4
+import hw5
 
 # Page configuration
 st.set_page_config(
@@ -143,13 +144,17 @@ def run_hw3():
 def run_hw4():
     hw4.run()
 
+def run_hw5():
+    hw5.run()
+
 # Create navigation with dropdown structure
 nav = st.navigation({
     "HW Manager": [
         st.Page(run_hw1, title="HW1 - Document QA", url_path="hw1"),
         st.Page(run_hw2, title="HW2 - URL Summarizer", url_path="hw2"), 
         st.Page(run_hw3, title="HW3 - Chatbot to discuss URL", url_path="hw3"),
-        st.Page(run_hw4, title="HW4 - RAG", url_path="hw4", default=True)
+        st.Page(run_hw4, title="HW4 - RAG", url_path="hw4"),
+        st.Page(run_hw5, title="HW5 - Function_Calling", url_path="hw5", default=True)
     ]
 })
 
