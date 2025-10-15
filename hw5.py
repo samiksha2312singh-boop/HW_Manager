@@ -343,33 +343,6 @@ def run():
             st.markdown("**Last Exchange:**")
             st.json(st.session_state.hw5_conversation[-2:])
     
-    # Information section
-    with st.expander("ℹ️ How This Works"):
-        st.markdown("""
-        ### Key Features:
-        
-        1. **Function-Based Architecture**: 
-           - Uses OpenAI's function calling to intelligently retrieve information
-           - The LLM decides when to call the `get_relevant_club_info` function
-        
-        2. **Short-Term Memory**:
-           - Maintains conversation context (configurable 0-10 Q&A pairs)
-           - Allows for follow-up questions and contextual responses
-        
-        3. **Intelligent Retrieval**:
-           - Vector search finds the most relevant documents
-           - LLM synthesizes information into natural responses
-        
-        4. **Source Attribution**:
-           - Shows which documents were used to answer your question
-           - Maintains transparency in information sourcing
-        
-        ### How It Differs from HW4:
-        - **HW4**: Prompt-based embedding and direct RAG pipeline
-        - **HW5**: Function calling allows the LLM to decide when/how to retrieve info
-        - Better handling of conversational context
-        - More flexible and intelligent information retrieval
-        """)
 
 
 if __name__ == "__main__":
